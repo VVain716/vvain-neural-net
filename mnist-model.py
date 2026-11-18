@@ -85,14 +85,12 @@ if __name__ == "__main__":
     CrossEntropyLoss(10 ** -6, 10),
     (1, 28, 28)
     )
-  # training = get_data("data/training")
-  # training = training[0:5000]
-  # model.train_loop(training, 3)
-  # model.save("model1test-5epochs.npz")
-  model.load("model1test-3epochs.npz")
-  # testing = get_data("data/testing")
-  # testing = testing[0:5000]
-  # results = model.test(testing)
-  # print(f"ACC: {results:.2%}")
+  training = get_data("data/training")
+  training = training[0:10000]
+  model.train_loop(training, 3)
+  model.save("model1test-5epochs.npz")
+  testing = get_data("data/testing")
+  results = model.test(testing)
+  print(f"ACC: {results:.2%}")
   img = parse_image("data/testing/6/9086.png")
   print(model.predict(img))

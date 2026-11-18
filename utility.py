@@ -13,41 +13,40 @@ class Conv2D:
     self.filters = np.random.randn(self.num_filters, self.in_channels, self.filter_size, self.filter_size) * np.sqrt(2.0 / (self.in_channels * self.filter_size * self.filter_size))  
     self.filters = self.filters.astype(np.float32)
 
-    self.prev_input = None
+    self.prev_input_shape = None
     self.prev_output = None
+    self.X_col = None
   def forward(self, img):
-    _, img_height, img_width = img.shape
-    # img is a numpy array
-    output = np.zeros((self.num_filters, img_height - self.filter_size + 1, img_width - self.filter_size + 1))
-    for filter_idx, filter in enumerate(self.filters):
-      for row in range(img_height - self.filter_size + 1):
-        for col in range(img_width - self.filter_size + 1):
-          val = self.biases[filter_idx]
-          val += np.sum(filter * img[:, row:row+self.filter_size, col:col+self.filter_size])
-          output[filter_idx][row][col] = val
-    output = np.maximum(0.0, output)
-    self.prev_input = img
+    self.prev_input_shape = img.shape
+    window_view = np.lib.stride_tricks.sliding_window_view(img, (self.filter_size, self.filter_size), axis=(1, 2))
+    X_col = window_view.transpose(0, 3, 4, 1, 2).reshape(self.in_channels * self.filter_size * self.filter_size, window_view.shape[1] * window_view.shape[2])
+    self.X_col = X_col
+    W_col = self.filters.reshape(self.num_filters, self.in_channels * self.filter_size * self.filter_size)
+    val = W_col @ X_col + self.biases.reshape(self.num_filters, 1)
+    output = val.reshape(self.num_filters, window_view.shape[1], window_view.shape[2])
+    output = np.maximum(0.0, output) # RELU
     self.prev_output = output
     return output
   def backward(self, x):
     x *= (self.prev_output > 0)
-    grad_filts = np.zeros(self.filters.shape, dtype=np.float32)
-    grad_biases = np.zeros(self.biases.shape, dtype=np.float32)
-    output = np.zeros(self.prev_input.shape, dtype=np.float32)
-
-    _, rows, cols = x.shape
-    for filter_idx in range(self.num_filters):
-      for row in range(rows):
-        for col in range(cols):
-
-          grad_filts[filter_idx] += x[filter_idx, row, col] * self.prev_input[:, row:row+self.filter_size, col:col+self.filter_size]
-          grad_biases[filter_idx] += x[filter_idx, row, col]
-          output[:, row:row+self.filter_size, col:col+self.filter_size] += x[filter_idx, row, col] * self.filters[filter_idx]
+    _, out_height, out_width = x.shape
+    d_out = x.reshape(self.num_filters, out_height * out_width)
+    grad_biases = np.sum(d_out, axis=1)
+    grad_filts = d_out @ self.X_col.T
+    grad_filts = grad_filts.reshape(self.filters.shape)
+    W_col = self.filters.reshape(self.num_filters, self.in_channels * self.filter_size * self.filter_size)
+    dx_col = W_col.T @ d_out
+    dx_col = dx_col.reshape(self.in_channels, self.filter_size, self.filter_size, out_height, out_width)
+    output = np.zeros(self.prev_input_shape)
+    for i in range(self.filter_size):
+      for j in range(self.filter_size):
+        output[:, i:i+out_height, j:j+out_width] += dx_col[:, i, j, :, :]
 
     self.filters -= self.learning_rate * grad_filts
     self.biases -= self.learning_rate * grad_biases
 
     return output
+        
 
 
 class MaxPool2D:
