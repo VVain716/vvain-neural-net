@@ -18,36 +18,36 @@ class Conv2D:
     self.X_col = None
   def forward(self, img):
     self.prev_input_shape = img.shape
-    window_view = np.lib.stride_tricks.sliding_window_view(img, (self.filter_size, self.filter_size), axis=(1, 2))
-    X_col = window_view.transpose(0, 3, 4, 1, 2).reshape(self.in_channels * self.filter_size * self.filter_size, window_view.shape[1] * window_view.shape[2])
+    window_view = np.lib.stride_tricks.sliding_window_view(img, (self.filter_size, self.filter_size), axis=(2, 3))
+    X_col = window_view.transpose(1, 4, 5, 0, 2, 3).reshape(self.in_channels * self.filter_size * self.filter_size, img.shape[0] * window_view.shape[2] * window_view.shape[3])
     self.X_col = X_col
     W_col = self.filters.reshape(self.num_filters, self.in_channels * self.filter_size * self.filter_size)
     val = W_col @ X_col + self.biases.reshape(self.num_filters, 1)
-    output = val.reshape(self.num_filters, window_view.shape[1], window_view.shape[2])
-    output = np.maximum(0.0, output) # RELU
+    val = val.reshape(self.num_filters, img.shape[0], window_view.shape[2], window_view.shape[3]).transpose(1, 0, 2, 3)
+    output = np.maximum(0.0, val) # RELU
     self.prev_output = output
     return output
   def backward(self, x):
+    B = x.shape[0]
     x *= (self.prev_output > 0)
-    _, out_height, out_width = x.shape
-    d_out = x.reshape(self.num_filters, out_height * out_width)
+    x = x.transpose(1, 0, 2, 3)
+    _, _, out_height, out_width = x.shape
+    d_out = x.reshape(self.num_filters, B * out_height * out_width)
     grad_biases = np.sum(d_out, axis=1)
     grad_filts = d_out @ self.X_col.T
     grad_filts = grad_filts.reshape(self.filters.shape)
     W_col = self.filters.reshape(self.num_filters, self.in_channels * self.filter_size * self.filter_size)
     dx_col = W_col.T @ d_out
-    dx_col = dx_col.reshape(self.in_channels, self.filter_size, self.filter_size, out_height, out_width)
+    dx_col = dx_col.reshape(self.in_channels, self.filter_size, self.filter_size, B, out_height, out_width).transpose(3, 0, 1, 2, 4, 5)
     output = np.zeros(self.prev_input_shape)
     for i in range(self.filter_size):
       for j in range(self.filter_size):
-        output[:, i:i+out_height, j:j+out_width] += dx_col[:, i, j, :, :]
+        output[:, :, i:i+out_height, j:j+out_width] += dx_col[:, :, i, j, :, :]
 
     self.filters -= self.learning_rate * grad_filts
     self.biases -= self.learning_rate * grad_biases
 
     return output
-        
-
 
 class MaxPool2D:
   def __init__(self, pool_size=2, stride=2):
@@ -56,29 +56,26 @@ class MaxPool2D:
 
     self.last_input = None
     self.last_output = None
+
+    self.last_window_view = None
   def forward(self, img):
     self.last_input = img
-    channels, input_height, input_width = img.shape
+    B, channels, input_height, input_width = img.shape
     output_height = (input_height - self.pool_size) // self.stride + 1
     output_width = (input_width - self.pool_size) // self.stride + 1
-    output = np.zeros((channels, output_height, output_width), dtype=np.float32)
-    for ch in range(channels):
-      for row in range(0, input_height - self.pool_size + 1, self.stride):
-        for col in range(0, input_width - self.pool_size + 1, self.stride):
-          val = np.max(img[ch, row:row+self.pool_size, col:col+self.pool_size])
-          output[ch, row // self.stride, col // self.stride] = val
-    self.last_output = output
-    return output
-  def backward(self, x):
-    output = np.zeros(self.last_input.shape, dtype=np.float32)
-    channels, input_height, input_width = self.last_input.shape
-    for ch in range(channels):
-      for row in range(0, input_height - self.pool_size + 1, self.stride):
-        for col in range(0, input_width - self.pool_size + 1, self.stride):
+    window_view = np.lib.stride_tricks.sliding_window_view(img, (self.pool_size, self.pool_size), axis=(2, 3))
+    self.last_window_view = window_view[:, :, ::self.stride, ::self.stride, :, :]
+    self.last_output = np.max(self.last_window_view, axis=(4, 5)) # RELU
 
-          arr = self.last_input[ch, row:row+self.pool_size, col:col+self.pool_size]
-          max_row, max_col = np.unravel_index(np.argmax(arr), arr.shape)
-          output[ch, row + max_row, col + max_col] += x[ch, row // self.stride, col // self.stride]
+    return self.last_output
+  def backward(self, x):
+    _, _, H_out, W_out = x.shape
+    output = np.zeros(self.last_input.shape, dtype=np.float32)
+    grad_windows = (self.last_window_view == self.last_output[:, :, :, :, None, None]) * x[:, :, :, :, None, None]
+    for i in range(self.pool_size):
+      for j in range(self.pool_size):
+        output[:, :, i:i+H_out*self.stride:self.stride, j:j+W_out*self.stride:self.stride] += grad_windows[:, :, :, :, i, j]
+
     return output
 
 class Flatten:
@@ -87,7 +84,7 @@ class Flatten:
 
   def forward(self, img):
     self.last_shape = img.shape
-    return img.flatten()
+    return img.reshape(img.shape[0], -1)
   def backward(self, x):
     return x.reshape(self.last_shape)
 
@@ -103,11 +100,11 @@ class Dense:
     self.learning_rate = learning_rate
   def forward(self, x):
     self.last_input = x
-    output = self.weights @ x + self.biases
+    output = x @ self.weights.T + self.biases
     if self.activation == "relu":
       output = np.maximum(0.0, output) #relu
     else:
-      output = np.exp(output - np.max(output)) / np.sum(np.exp(output - np.max(output)))
+      output = np.exp(output - np.max(output, axis=1, keepdims=True)) / np.sum(np.exp(output - np.max(output, axis=1, keepdims=True)), axis=1, keepdims=True)
     self.last_output = output
     return output
   def backward(self, x):
@@ -117,9 +114,9 @@ class Dense:
     else:
       d_z = x
 
-    weights_grad = np.outer(d_z, self.last_input)
-    bias_grad = d_z
-    backward_pass = self.weights.T @ d_z
+    weights_grad = d_z.T @ self.last_input
+    bias_grad = np.sum(d_z, axis=0)
+    backward_pass = d_z @ self.weights
     self.weights -= self.learning_rate * weights_grad # Gradient Descent
     self.biases -= self.learning_rate * bias_grad # Grad Descent
     return backward_pass
@@ -130,9 +127,10 @@ class CrossEntropyLoss:
     self.out_nodes = out_nodes
 
   def forward(self, x, correct):
-    return -np.log(x[correct] + self.drift) # CE LOSS
+    row_idx = np.arange(x.shape[0])
+    return -np.mean(np.log(x[row_idx, correct] + self.drift)) # CE LOSS
   
   def backward(self, x, correct):
-    y = np.zeros(self.out_nodes)
-    y[correct] = 1
-    return x - y
+    y = np.zeros((x.shape[0], self.out_nodes))
+    y[np.arange(x.shape[0]), correct] = 1
+    return (x - y ) / x.shape[0]

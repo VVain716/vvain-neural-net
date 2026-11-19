@@ -3,15 +3,15 @@ import numpy as np
 import os
 import random
 
-def parse_image(path):
+def parse_image(path, img_height, img_width):
   img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
   if img is None:
     return None
-  img = cv2.resize(img, (64, 64))
+  img = cv2.resize(img, (img_width, img_height))
   arr = np.asarray(img)
   return arr.astype(np.float32) / 255.0
 
-def get_data(dir):
+def get_data(dir, img_height, img_width):
   label_dict = {}
   res = []
   for idx, label in enumerate(os.listdir(dir)):
@@ -19,7 +19,7 @@ def get_data(dir):
     print(label)
     for f in os.listdir(os.path.join(dir, label)):
       path = os.path.join(dir, label, f)
-      img = parse_image(path)
+      img = parse_image(path, img_height, img_width)
       if img is None:
         continue
       res.append((img, idx))
